@@ -5,8 +5,6 @@ command:
   - streamlit
   - run
   - app.py
-  - --server.port=8001
-  - --server.address=0.0.0.0
 
 env:
   - name: STREAMLIT_BROWSER_GATHER_USAGE_STATS
@@ -14,9 +12,9 @@ env:
   # Model serving endpoint for chatbot (foundation model or agent)
   - name: SERVING_ENDPOINT
     valueFrom: serving-endpoint
-  # SQL warehouse for data queries
-  - name: DATABRICKS_WAREHOUSE_ID
-    valueFrom: sql-warehouse
+  # SQL warehouse (optional): uncomment below AND add "sql-warehouse" resource for data viz
+  # - name: DATABRICKS_WAREHOUSE_ID
+  #   valueFrom: sql-warehouse
   # Optional: Unity Catalog location for predictive maintenance data
   # Default: dataknobs_predictive_maintenance_and_asset_management.datasets
   - name: DATA_CATALOG
