@@ -92,16 +92,30 @@ def run_data_query(user_message: str, chat_history: list) -> tuple[str, object |
     if not parsed or "sql" not in parsed:
         return response, None, None, "bar"
 
-    sql_query = clean_sql(parsed["sql"])
+    sql_query = clean_sql(parsed.get("sql", "") or "")
     chart_type = parsed.get("chart_type", "bar")
     explanation = parsed.get("explanation", "")
+
+    if not sql_query or len(sql_query.strip()) < 10:
+        return (
+            f"**No valid SQL generated.** The model returned empty or invalid SQL.\n\n"
+            f"**Raw response:** {response[:500]}...\n\n"
+            "Try rephrasing your question or use a prompt like: *Show me CNC machine failure rates by type*",
+            None, None, "bar"
+        )
 
     try:
         df = run_sql_query(sql_query)
     except Exception as e:
         logger.exception("SQL execution failed")
         err = str(e)
-        hint = "Check: (1) DataKnobs tables exist in Unity Catalog, (2) SQL warehouse is running, (3) App has access to the catalog."
+        hint = (
+            "**Troubleshooting:**\n"
+            "1. **SQL warehouse** – Ensure it's started (SQL Warehouses → select → Start)\n"
+            "2. **App permissions** – App service principal needs **Can Use** on the warehouse\n"
+            "3. **Unity Catalog** – Tables must exist; app needs `USE CATALOG`, `USE SCHEMA`, `SELECT` on tables\n"
+            "4. **Connection** – 'Error during request to server' often means warehouse unreachable or auth failed"
+        )
         return f"**SQL execution failed:** {err}\n\n**Query attempted:**\n```sql\n{sql_query}\n```\n\n{hint}", None, None, "bar"
 
     try:
