@@ -28,6 +28,9 @@ from visualization import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Show real error behind "Error during request to server" in app logs (Databricks Apps → Logs)
+logging.getLogger("databricks.sql").setLevel(logging.DEBUG)
+
 SERVING_ENDPOINT = os.getenv("SERVING_ENDPOINT")
 
 # Example prompts for DataKnobs predictive maintenance data

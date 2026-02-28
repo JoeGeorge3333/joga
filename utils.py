@@ -19,21 +19,62 @@ def _get_table_prefix() -> str:
     return f"{catalog}.{schema}"
 
 
+def _get_server_hostname() -> str:
+    """Extract server hostname from DATABRICKS_HOST or Config (strip protocol)."""
+    host = os.getenv("DATABRICKS_HOST") or os.getenv("DATABRICKS_SERVER_HOSTNAME")
+    if not host:
+        host = str(getattr(Config(), "host", "") or "")
+    host = host.replace("https://", "").replace("http://", "").rstrip("/")
+    if not host:
+        raise ValueError(
+            "DATABRICKS_HOST or DATABRICKS_SERVER_HOSTNAME must be set. "
+            "Databricks Apps inject these automatically; if missing, check app deployment."
+        )
+    return host
+
+
+def _credentials_provider():
+    """Credentials provider for SQL connector. Uses OAuth M2M when client_id/secret set (Databricks Apps)."""
+    client_id = os.getenv("DATABRICKS_CLIENT_ID")
+    client_secret = os.getenv("DATABRICKS_CLIENT_SECRET")
+    if client_id and client_secret:
+        from databricks.sdk.core import oauth_service_principal
+        host = _get_server_hostname()
+        config = Config(
+            host=f"https://{host}",
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+        return oauth_service_principal(config)
+    return Config().authenticate
+
+
 def run_sql_query(query: str) -> pd.DataFrame:
     """Execute a SQL query against the Databricks SQL warehouse."""
     warehouse_id = os.getenv("DATABRICKS_WAREHOUSE_ID")
     if not warehouse_id:
         raise ValueError("DATABRICKS_WAREHOUSE_ID must be set in app.yaml")
 
-    cfg = Config()
-    with sql.connect(
-        server_hostname=cfg.host,
-        http_path=f"/sql/1.0/warehouses/{warehouse_id}",
-        credentials_provider=cfg.authenticate,
-    ) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(query)
-            return cursor.fetchall_arrow().to_pandas()
+    http_path = os.getenv("DATABRICKS_HTTP_PATH") or f"/sql/1.0/warehouses/{warehouse_id}"
+    server_hostname = _get_server_hostname()
+
+    try:
+        with sql.connect(
+            server_hostname=server_hostname,
+            http_path=http_path,
+            credentials_provider=_credentials_provider,
+        ) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(query)
+                return cursor.fetchall_arrow().to_pandas()
+    except Exception as e:
+        logger.exception("SQL connection or query failed")
+        # RequestError.context has "original-exception" with the real error (connector masks it in the message)
+        orig = getattr(e, "context", {}).get("original-exception")
+        if orig:
+            err_msg = f"{e} [underlying: {orig}]"
+            raise RuntimeError(err_msg) from e
+        raise
 
 
 # Fallback table names if SHOW TABLES fails
