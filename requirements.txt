@@ -1,4 +1,6 @@
 # Databricks Apps - Predictive Maintenance Chatbot
+# urllib3>=2.3.0 helps avoid "Error during request to server" with SQL connector
+urllib3>=2.3.0
 streamlit>=1.28.0
 pandas>=2.0.0
 plotly>=5.18.0

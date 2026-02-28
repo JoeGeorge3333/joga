@@ -57,6 +57,13 @@ def _build_chat_prompt() -> str:
 
 {data_context}
 
+When users ask vaguely (e.g. "visualize cnc", "show me data", "exploratory analysis"), suggest specific prompts they can try:
+- "Show me CNC machine failure rates by type (H, L, M)"
+- "Plot failure type distribution (TWF, HDF, PWF, OSF, RNF)"
+- "Battery capacity degradation over cycles"
+- "Electrical fault counts by phase"
+- "Transformer oil temperature vs winding temperature over time"
+
 Answer questions, suggest analyses, and help interpret results. Be concise."""
 
 
@@ -73,31 +80,51 @@ def run_data_query(user_message: str, chat_history: list) -> tuple[str, object |
 
     try:
         response = query_chat_endpoint(SERVING_ENDPOINT, messages, max_tokens=1024)
-        parsed = parse_llm_data_response(response)
+    except Exception as e:
+        logger.exception("Model endpoint request failed")
+        err = str(e)
+        hint = "Check that the model serving endpoint is running and the app has Can Query permission."
+        return f"**Model request failed:** {err}\n\n{hint}", None
 
-        if parsed and "sql" in parsed:
-            sql_query = clean_sql(parsed["sql"])
-            chart_type = parsed.get("chart_type", "bar")
-            explanation = parsed.get("explanation", "")
+    parsed = parse_llm_data_response(response)
 
-            # Execute SQL
-            df = run_sql_query(sql_query)
-            fig = infer_chart_from_data(df, chart_type)
-
-            text = f"**{explanation}**\n\nQuery returned {len(df)} rows."
-            if not df.empty and len(df) <= 20:
-                text += f"\n\n| " + " | ".join(df.columns) + " |\n|" + "|".join(["---"] * len(df.columns)) + "|\n"
-                for _, row in df.iterrows():
-                    text += "| " + " | ".join(str(v) for v in row) + " |\n"
-
-            return text, fig
-
-        # No structured data response - return raw response as plain chat
+    if not parsed or "sql" not in parsed:
         return response, None
 
+    sql_query = clean_sql(parsed["sql"])
+    chart_type = parsed.get("chart_type", "bar")
+    explanation = parsed.get("explanation", "")
+
+    try:
+        df = run_sql_query(sql_query)
     except Exception as e:
-        logger.exception("Data query failed")
-        return f"Sorry, I couldn't process that: {str(e)}", None
+        logger.exception("SQL execution failed")
+        err = str(e)
+        hint = "Check: (1) DataKnobs tables exist in Unity Catalog, (2) SQL warehouse is running, (3) App has access to the catalog."
+        return f"**SQL execution failed:** {err}\n\n**Query attempted:**\n```sql\n{sql_query}\n```\n\n{hint}", None
+
+    try:
+        fig = infer_chart_from_data(df, chart_type)
+    except Exception as e:
+        logger.exception("Chart generation failed")
+        return f"**Chart failed:** {e}\n\nQuery returned {len(df)} rows. Data preview:\n{table_preview(df)}", None
+
+    text = f"**{explanation}**\n\nQuery returned {len(df)} rows."
+    if not df.empty and len(df) <= 20:
+        text += f"\n\n{table_preview(df)}"
+
+    return text, fig
+
+
+def table_preview(df) -> str:
+    """Format a small DataFrame as markdown table."""
+    if df.empty or len(df) > 50:
+        return ""
+    cols = list(df.columns)
+    lines = ["| " + " | ".join(str(c) for c in cols) + " |", "|" + "|".join(["---"] * len(cols)) + "|"]
+    for _, row in df.iterrows():
+        lines.append("| " + " | ".join(str(v) for v in row) + " |")
+    return "\n".join(lines)
 
 
 def run_chat(user_message: str, chat_history: list) -> str:
@@ -108,7 +135,11 @@ def run_chat(user_message: str, chat_history: list) -> str:
         *[{"role": m["role"], "content": m["content"]} for m in chat_history[-6:]],
         {"role": "user", "content": user_message},
     ]
-    return query_chat_endpoint(SERVING_ENDPOINT, messages, max_tokens=1024)
+    try:
+        return query_chat_endpoint(SERVING_ENDPOINT, messages, max_tokens=1024)
+    except Exception as e:
+        logger.exception("Model endpoint request failed")
+        return f"**Model request failed:** {str(e)}\n\nCheck that the model serving endpoint is running and the app has Can Query permission."
 
 
 def main():
