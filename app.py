@@ -219,7 +219,7 @@ def main():
 
         st.divider()
         st.subheader("📜 Query history")
-        for i, q in enumerate((st.session_state.query_history or [])[:5]):
+        for i, q in enumerate((st.session_state.get("query_history") or [])[:5]):
             q_short = (q[:60] + "…") if len(q) > 60 else q
             if st.button(q_short.replace("\n", " "), key=f"qh_{i}", use_container_width=True):
                 st.session_state.raw_sql_to_run = q
