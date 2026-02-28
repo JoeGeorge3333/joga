@@ -8,11 +8,12 @@ data from Databricks sample datasets and predictive maintenance tables.
 import logging
 import os
 
+import pandas as pd
 import streamlit as st
 
 from model_serving_utils import is_endpoint_supported, query_chat_endpoint
 from utils import clean_sql, get_schema_context, parse_llm_data_response, run_sql_query
-from visualization import infer_chart_from_data
+from visualization import create_chart_with_selection, infer_chart_from_data
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ When users ask vaguely (e.g. "visualize cnc", "show me data", "exploratory analy
 Answer questions, suggest analyses, and help interpret results. Be concise."""
 
 
-def run_data_query(user_message: str, chat_history: list) -> tuple[str, object | None]:
+def run_data_query(user_message: str, chat_history: list) -> tuple[str, object | None, "pd.DataFrame | None", str]:
     """
     Ask the LLM to generate SQL + chart, execute it, and return response + Plotly figure.
     """
@@ -84,12 +85,12 @@ def run_data_query(user_message: str, chat_history: list) -> tuple[str, object |
         logger.exception("Model endpoint request failed")
         err = str(e)
         hint = "Check that the model serving endpoint is running and the app has Can Query permission."
-        return f"**Model request failed:** {err}\n\n{hint}", None
+        return f"**Model request failed:** {err}\n\n{hint}", None, None, "bar"
 
     parsed = parse_llm_data_response(response)
 
     if not parsed or "sql" not in parsed:
-        return response, None
+        return response, None, None, "bar"
 
     sql_query = clean_sql(parsed["sql"])
     chart_type = parsed.get("chart_type", "bar")
@@ -101,19 +102,19 @@ def run_data_query(user_message: str, chat_history: list) -> tuple[str, object |
         logger.exception("SQL execution failed")
         err = str(e)
         hint = "Check: (1) DataKnobs tables exist in Unity Catalog, (2) SQL warehouse is running, (3) App has access to the catalog."
-        return f"**SQL execution failed:** {err}\n\n**Query attempted:**\n```sql\n{sql_query}\n```\n\n{hint}", None
+        return f"**SQL execution failed:** {err}\n\n**Query attempted:**\n```sql\n{sql_query}\n```\n\n{hint}", None, None, "bar"
 
     try:
         fig = infer_chart_from_data(df, chart_type)
     except Exception as e:
         logger.exception("Chart generation failed")
-        return f"**Chart failed:** {e}\n\nQuery returned {len(df)} rows. Data preview:\n{table_preview(df)}", None
+        return f"**Chart failed:** {e}\n\nQuery returned {len(df)} rows. Data preview:\n{table_preview(df)}", None, df, chart_type
 
     text = f"**{explanation}**\n\nQuery returned {len(df)} rows."
     if not df.empty and len(df) <= 20:
         text += f"\n\n{table_preview(df)}"
 
-    return text, fig
+    return text, fig, df, chart_type
 
 
 def table_preview(df) -> str:
@@ -198,41 +199,110 @@ def main():
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    if "viz_data" not in st.session_state:
+        st.session_state.viz_data = None
+    if "viz_chart_type" not in st.session_state:
+        st.session_state.viz_chart_type = "bar"
 
     # Use suggested prompt from sidebar button
     prompt_input = st.chat_input("Ask about failure rates, asset health, or trends...")
     if "suggested_prompt" in st.session_state:
         prompt_input = st.session_state.pop("suggested_prompt", None)
 
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-            if "figure" in msg and msg["figure"] is not None:
-                st.plotly_chart(msg["figure"], use_container_width=True)
+    # Two-column layout: chat left, interactive viz right
+    chat_col, viz_col = st.columns([3, 2], gap="large")
 
-    if prompt := prompt_input:
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    with chat_col:
+        st.subheader("💬 Chat")
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+                if "figure" in msg and msg["figure"] is not None:
+                    st.plotly_chart(msg["figure"], use_container_width=True)
 
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        if prompt := prompt_input:
+            st.session_state.messages.append({"role": "user", "content": prompt})
 
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                if warehouse_id:
-                    response_text, fig = run_data_query(prompt, st.session_state.messages)
-                else:
-                    response_text = run_chat(prompt, st.session_state.messages)
-                    fig = None
+            with st.chat_message("user"):
+                st.markdown(prompt)
 
-                st.markdown(response_text)
-                if fig is not None:
-                    st.plotly_chart(fig, use_container_width=True)
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    if warehouse_id:
+                        response_text, fig, df, chart_type = run_data_query(prompt, st.session_state.messages)
+                        if df is not None and fig is not None:
+                            st.session_state.viz_data = df
+                            st.session_state.viz_chart_type = chart_type
+                    else:
+                        response_text = run_chat(prompt, st.session_state.messages)
+                        fig = None
+                        df = None
 
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": response_text,
-            "figure": fig,
-        })
+                    st.markdown(response_text)
+                    if fig is not None:
+                        st.plotly_chart(fig, use_container_width=True)
+
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": response_text,
+                "figure": fig,
+            })
+            st.rerun()
+
+    with viz_col:
+        st.subheader("📊 Exploratory Data Analysis")
+        st.caption("Visuals update when you ask data questions. Use controls to explore.")
+
+        df = st.session_state.viz_data
+        if df is not None and not df.empty:
+            cols = list(df.columns)
+            numeric = [c for c in cols if pd.api.types.is_numeric_dtype(df[c])]
+            categorical = [c for c in cols if c not in numeric]
+
+            chart_opts = ["bar", "line", "scatter", "pie", "heatmap"]
+            default_idx = chart_opts.index(st.session_state.viz_chart_type) if st.session_state.viz_chart_type in chart_opts else 0
+            chart_type = st.selectbox(
+                "Chart type",
+                options=chart_opts,
+                index=default_idx,
+                key="viz_chart_type_select",
+            )
+
+            x_opts = ["(auto)"] + cols
+            y_opts = ["(auto)"] + cols
+            color_opts = ["(none)"] + cols
+
+            x_col = st.selectbox("X axis", x_opts, key="viz_x")
+            y_col = st.selectbox("Y axis", y_opts, key="viz_y")
+            color_col = st.selectbox("Color by", color_opts, key="viz_color")
+
+            x_val = None if x_col == "(auto)" else x_col
+            y_val = None if y_col == "(auto)" else y_col
+            color_val = None if color_col == "(none)" else color_col
+
+            try:
+                viz_fig = create_chart_with_selection(
+                    df, chart_type,
+                    x_col=x_val, y_col=y_val, color_col=color_val,
+                    title=f"Data: {len(df)} rows",
+                )
+                st.plotly_chart(viz_fig, use_container_width=True, key="viz_chart")
+            except Exception as e:
+                st.error(f"Chart error: {e}")
+                viz_fig = infer_chart_from_data(df, chart_type)
+                st.plotly_chart(viz_fig, use_container_width=True, key="viz_chart_fallback")
+
+            with st.expander("📋 Data table", expanded=False):
+                st.dataframe(df.head(100), use_container_width=True, height=300)
+
+            if st.button("Clear visualization", key="viz_clear"):
+                st.session_state.viz_data = None
+                st.rerun()
+        else:
+            st.info("Ask a data question to see visualizations here. Try: *Show me CNC machine failure rates by type*")
+            st.markdown("**Example prompts:**")
+            for ex in EXAMPLE_PROMPTS[:3]:
+                st.markdown(f"- {ex}")
 
 
 if __name__ == "__main__":

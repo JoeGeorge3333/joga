@@ -101,3 +101,15 @@ def infer_chart_from_data(df: pd.DataFrame, chart_type: str) -> go.Figure:
     color = categorical[1] if len(categorical) > 1 else None
 
     return create_chart(df, chart_type, x=x, y=y, color=color)
+
+
+def create_chart_with_selection(
+    df: pd.DataFrame,
+    chart_type: str,
+    x_col: str | None = None,
+    y_col: str | None = None,
+    color_col: str | None = None,
+    title: str = "",
+) -> go.Figure:
+    """Create chart with explicit column selection for interactive EDA."""
+    return create_chart(df, chart_type, x=x_col, y=y_col, color=color_col, title=title)
