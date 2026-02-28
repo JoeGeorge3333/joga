@@ -36,33 +36,62 @@ def run_sql_query(query: str) -> pd.DataFrame:
             return cursor.fetchall_arrow().to_pandas()
 
 
-def get_schema_context() -> str:
+def get_schema_context(dataset_mode: str = "all") -> str:
     """Return schema documentation for the LLM to generate SQL."""
-    prefix = _get_table_prefix()
-    return f"""
-## Predictive Maintenance Datasets (Unity Catalog)
+    parts = []
 
-Table prefix: {prefix}
+    # Databricks sample datasets - available in every workspace
+    if dataset_mode in ("all", "samples"):
+        parts.append("""
+## Databricks Sample Datasets (ALWAYS AVAILABLE - use these for real data)
 
-### 1. CNC Machine Failure (cnc_data_ai_4_i_2020)
-- UDI (bigint), Product ID (string), Type (string: H, L, M)
-- Air temperature [K], Process temperature [K], Rotational speed [rpm], Torque [Nm], Tool wear [min]
-- Machine failure (bigint: 0/1), TWF, HDF, PWF, OSF, RNF (failure type flags)
+### NYC Taxi (samples.nyctaxi.trips)
+- tpep_pickup_datetime, tpep_dropoff_datetime, passenger_count, trip_distance
+- fare_amount, total_amount, tip_amount, tolls_amount, PULocationID, DOLocationID
+- payment_type, VendorID, RatecodeID
+Example: SELECT fare_amount, trip_distance, passenger_count FROM samples.nyctaxi.trips LIMIT 1000
 
-### 2. Electrical Fault (electrical_fault_train_test_data, electrical_fault_validation_data)
+### TPC-H (samples.tpch)
+- lineitem: l_orderkey, l_partkey, l_quantity, l_extendedprice, l_discount, l_shipdate
+- orders: o_orderkey, o_custkey, o_totalprice, o_orderdate, o_orderstatus
+- customer: c_custkey, c_name, c_nationkey
+- part: p_partkey, p_name, p_retailprice
+Example: SELECT o_orderdate, SUM(l_extendedprice) as revenue FROM samples.tpch.lineitem l JOIN samples.tpch.orders o ON l.l_orderkey = o.o_orderkey GROUP BY o_orderdate
+""")
+
+    # Predictive maintenance - when user has loaded this data
+    if dataset_mode in ("all", "predictive"):
+        prefix = _get_table_prefix()
+        parts.append(f"""
+## Predictive Maintenance Datasets (optional - prefix: {prefix})
+
+### 1. CNC Machine Failure ({prefix}.cnc_data_ai_4_i_2020)
+- UDI, Product ID, Type (H, L, M), Air temperature [K], Process temperature [K]
+- Rotational speed [rpm], Torque [Nm], Tool wear [min], Machine failure, TWF, HDF, PWF, OSF, RNF
+
+### 2. Electrical Fault ({prefix}.electrical_fault_train_test_data)
 - G, C, B, A (fault flags), Ia, Ib, Ic (currents), Va, Vb, Vc (voltages)
 
-### 3. Battery/Heater (heater_train_test_data, heater_validation_data)
-- Voltage_measured, Current_measured, Temperature_measured, Current_charge, Voltage_charge
-- Time, Capacity, id_cycle, type, ambient_temperature, time_year, PhID
+### 3. Battery/Heater ({prefix}.heater_train_test_data)
+- Voltage_measured, Current_measured, Temperature_measured, Capacity, id_cycle, PhID
 
-### 4. NASA Turbofan (nasa_data_train_test, nasa_data_validation)
-- id, Cycle, OpSet1, OpSet2, OpSet3, SensorMeasure1-21, RemainingUsefulLife
+### 4. NASA Turbofan ({prefix}.nasa_data_train_test)
+- id, Cycle, OpSet1-3, SensorMeasure1-21, RemainingUsefulLife
 
-### 5. Power Transformer (transformer_train_test_data, transformer_validation_data)
-- DeviceTimeStamp, OTI, WTI, ATI, OLI, OTI_A, OTI_T
-- VL1, VL2, VL3, IL1, IL2, IL3, VL12, VL23, VL31, INUT, MOG_A
-"""
+### 5. Power Transformer ({prefix}.transformer_train_test_data)
+- DeviceTimeStamp, OTI, WTI, ATI, OLI, VL1-3, IL1-3
+""")
+
+    return "\n".join(parts) if parts else "No datasets configured."
+
+
+def clean_sql(sql: str) -> str:
+    """Remove markdown code blocks and extra whitespace from SQL."""
+    sql = sql.strip()
+    if sql.startswith("```"):
+        sql = re.sub(r"^```\w*\n?", "", sql)
+        sql = re.sub(r"\n?```\s*$", "", sql)
+    return sql.strip()
 
 
 def parse_llm_data_response(response: str) -> dict[str, Any] | None:
