@@ -12,7 +12,13 @@ import pandas as pd
 import streamlit as st
 
 from model_serving_utils import is_endpoint_supported, query_chat_endpoint
-from utils import clean_sql, get_schema_context, parse_llm_data_response, run_sql_query
+from utils import (
+    clean_sql,
+    get_dynamic_schema_context,
+    get_schema_context,
+    parse_llm_data_response,
+    run_sql_query,
+)
 from visualization import create_chart_with_selection, infer_chart_from_data
 
 logging.basicConfig(level=logging.INFO)
@@ -30,8 +36,8 @@ EXAMPLE_PROMPTS = [
 ]
 
 
-def _build_data_prompt() -> str:
-    data_context = get_schema_context()
+def _build_data_prompt(dynamic_schema: str | None = None) -> str:
+    data_context = get_schema_context(dynamic_context=dynamic_schema)
     prefix = os.getenv("DATA_CATALOG", "dataknobs_predictive_maintenance_and_asset_management") + "." + os.getenv("DATA_SCHEMA", "datasets")
     return f"""You are a data assistant for DataKnobs predictive maintenance data. You help users explore and visualize asset health data.
 
@@ -44,6 +50,8 @@ When the user asks about data, statistics, trends, or visualizations:
 - chart_type: bar, line, scatter, pie, or heatmap
 - explanation: Brief description of the chart
 
+**SQL rules:** Quote column names with spaces/brackets: "Machine failure", "Air temperature [K]". Use standard SQL. For correlations use CORR(col1, col2). For "what tables" use SHOW TABLES IN {prefix}.
+
 Example for "failure rates by machine type":
 ```json
 {{"sql": "SELECT Type, SUM(\\"Machine failure\") as failures, COUNT(*) as total FROM {prefix}.cnc_data_ai_4_i_2020 GROUP BY Type", "chart_type": "bar", "explanation": "Failure counts by CNC machine type (H, L, M)"}}
@@ -52,8 +60,8 @@ Example for "failure rates by machine type":
 If the question is NOT about data, respond in plain text without JSON."""
 
 
-def _build_chat_prompt() -> str:
-    data_context = get_schema_context()
+def _build_chat_prompt(dynamic_schema: str | None = None) -> str:
+    data_context = get_schema_context(dynamic_context=dynamic_schema)
     return f"""You are a data assistant for DataKnobs predictive maintenance data. Help users explore CNC machines, electrical faults, batteries, turbofan engines, and power transformers.
 
 {data_context}
@@ -68,11 +76,15 @@ When users ask vaguely (e.g. "visualize cnc", "show me data", "exploratory analy
 Answer questions, suggest analyses, and help interpret results. Be concise."""
 
 
-def run_data_query(user_message: str, chat_history: list) -> tuple[str, object | None, "pd.DataFrame | None", str]:
+def run_data_query(
+    user_message: str,
+    chat_history: list,
+    dynamic_schema: str | None = None,
+) -> tuple[str, object | None, "pd.DataFrame | None", str]:
     """
     Ask the LLM to generate SQL + chart, execute it, and return response + Plotly figure.
     """
-    system_prompt = _build_data_prompt()
+    system_prompt = _build_data_prompt(dynamic_schema=dynamic_schema)
     messages = [
         {"role": "system", "content": system_prompt},
         *[{"role": m["role"], "content": m["content"]} for m in chat_history[-6:]],
@@ -142,9 +154,9 @@ def table_preview(df) -> str:
     return "\n".join(lines)
 
 
-def run_chat(user_message: str, chat_history: list) -> str:
+def run_chat(user_message: str, chat_history: list, dynamic_schema: str | None = None) -> str:
     """General chat without data visualization."""
-    system_prompt = _build_chat_prompt()
+    system_prompt = _build_chat_prompt(dynamic_schema=dynamic_schema)
     messages = [
         {"role": "system", "content": system_prompt},
         *[{"role": m["role"], "content": m["content"]} for m in chat_history[-6:]],
@@ -167,10 +179,24 @@ def main():
     st.title("🔧 Predictive Maintenance Chatbot")
     st.markdown("Ask questions about your DataKnobs asset data. I'll run SQL and create visualizations.")
 
-    # Sidebar: example prompts
+    # Sidebar: example prompts + schema refresh
     with st.sidebar:
         st.subheader("📊 DataKnobs datasets")
         st.caption("CNC, electrical faults, battery, turbofan, transformer")
+        if warehouse_id:
+            if st.button("🔄 Load schema from database", help="Fetch actual column names and sample rows to improve SQL generation"):
+                with st.spinner("Fetching schema..."):
+                    try:
+                        st.session_state.cached_schema = get_dynamic_schema_context()
+                        if st.session_state.cached_schema:
+                            st.success("Schema loaded")
+                        else:
+                            st.warning("Could not fetch schema. Tables may not exist yet.")
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+                st.rerun()
+            if st.session_state.get("cached_schema"):
+                st.caption("✓ Using live schema")
         st.divider()
         st.caption("Try these prompts:")
         for ex in EXAMPLE_PROMPTS[:5]:
@@ -217,6 +243,10 @@ def main():
         st.session_state.viz_data = None
     if "viz_chart_type" not in st.session_state:
         st.session_state.viz_chart_type = "bar"
+    if "cached_schema" not in st.session_state:
+        st.session_state.cached_schema = None
+
+    dynamic_schema = st.session_state.get("cached_schema")
 
     # Use suggested prompt from sidebar button
     prompt_input = st.chat_input("Ask about failure rates, asset health, or trends...")
@@ -243,12 +273,16 @@ def main():
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
                     if warehouse_id:
-                        response_text, fig, df, chart_type = run_data_query(prompt, st.session_state.messages)
+                        response_text, fig, df, chart_type = run_data_query(
+                            prompt, st.session_state.messages, dynamic_schema=dynamic_schema
+                        )
                         if df is not None and fig is not None:
                             st.session_state.viz_data = df
                             st.session_state.viz_chart_type = chart_type
                     else:
-                        response_text = run_chat(prompt, st.session_state.messages)
+                        response_text = run_chat(
+                            prompt, st.session_state.messages, dynamic_schema=dynamic_schema
+                        )
                         fig = None
                         df = None
 

@@ -36,17 +36,83 @@ def run_sql_query(query: str) -> pd.DataFrame:
             return cursor.fetchall_arrow().to_pandas()
 
 
-def get_schema_context() -> str:
-    """Return schema documentation for the LLM to generate SQL (DataKnobs predictive maintenance)."""
+# Table names for DataKnobs schema
+DATAKNOBS_TABLES = [
+    "cnc_data_ai_4_i_2020",
+    "electrical_fault_train_test_data",
+    "electrical_fault_validation_data",
+    "heater_train_test_data",
+    "heater_validation_data",
+    "nasa_data_train_test",
+    "nasa_data_validation",
+    "transformer_train_test_data",
+    "transformer_validation_data",
+]
+
+
+def fetch_table_schema(table_name: str) -> str | None:
+    """Fetch actual column names and types from the database. Returns None on failure."""
     prefix = _get_table_prefix()
-    return f"""
+    full_name = f"{prefix}.{table_name}"
+    try:
+        df = run_sql_query(f"DESCRIBE TABLE {full_name}")
+        if df.empty:
+            return None
+        # DESCRIBE returns col_name, data_type, comment (columns may vary by dialect)
+        cols = list(df.columns)
+        name_col = cols[0] if cols else "col_name"
+        type_col = cols[1] if len(cols) > 1 else "data_type"
+        lines = [f"- {row[name_col]} ({row[type_col]})" for _, row in df.iterrows()]
+        return "\n".join(lines)
+    except Exception as e:
+        logger.warning("Could not fetch schema for %s: %s", table_name, e)
+        return None
+
+
+def fetch_sample_rows(table_name: str, limit: int = 3) -> str | None:
+    """Fetch sample rows to show data format. Returns None on failure."""
+    prefix = _get_table_prefix()
+    full_name = f"{prefix}.{table_name}"
+    try:
+        df = run_sql_query(f"SELECT * FROM {full_name} LIMIT {limit}")
+        if df.empty:
+            return None
+        return df.to_string(max_colwidth=20)
+    except Exception as e:
+        logger.warning("Could not fetch samples for %s: %s", table_name, e)
+        return None
+
+
+def get_dynamic_schema_context() -> str | None:
+    """
+    Fetch actual schema + sample rows from the database.
+    Returns enriched context string, or None if fetch fails.
+    """
+    prefix = _get_table_prefix()
+    parts = [f"## Live schema from database (prefix: {prefix})\n"]
+    success = False
+    for table in DATAKNOBS_TABLES[:5]:  # Limit to first 5 tables to avoid timeout
+        schema = fetch_table_schema(table)
+        if schema:
+            success = True
+            parts.append(f"### {table}\n{schema}\n")
+            samples = fetch_sample_rows(table)
+            if samples:
+                parts.append(f"Sample rows:\n```\n{samples}\n```\n")
+    return "\n".join(parts) if success else None
+
+
+def get_schema_context(dynamic_context: str | None = None) -> str:
+    """Return schema documentation for the LLM. Pass dynamic_context from fetch when available."""
+    prefix = _get_table_prefix()
+    static = f"""
 ## DataKnobs Predictive Maintenance Datasets (Unity Catalog)
 
 Table prefix: {prefix}
 
 ### 1. CNC Machine Failure ({prefix}.cnc_data_ai_4_i_2020)
-- UDI, Product ID, Type (H, L, M), Air temperature [K], Process temperature [K]
-- Rotational speed [rpm], Torque [Nm], Tool wear [min], Machine failure, TWF, HDF, PWF, OSF, RNF
+- UDI, Product ID, Type (H, L, M), "Air temperature [K]", "Process temperature [K]"
+- "Rotational speed [rpm]", "Torque [Nm]", "Tool wear [min]", "Machine failure", TWF, HDF, PWF, OSF, RNF
 
 ### 2. Electrical Fault ({prefix}.electrical_fault_train_test_data, {prefix}.electrical_fault_validation_data)
 - G, C, B, A (fault flags), Ia, Ib, Ic (currents), Va, Vb, Vc (voltages)
@@ -55,11 +121,16 @@ Table prefix: {prefix}
 - Voltage_measured, Current_measured, Temperature_measured, Capacity, id_cycle, PhID, Time
 
 ### 4. NASA Turbofan ({prefix}.nasa_data_train_test, {prefix}.nasa_data_validation)
-- id, Cycle, OpSet1-3, SensorMeasure1-21, RemainingUsefulLife
+- id, Cycle, OpSet1, OpSet2, OpSet3, SensorMeasure1-21, RemainingUsefulLife
 
 ### 5. Power Transformer ({prefix}.transformer_train_test_data, {prefix}.transformer_validation_data)
-- DeviceTimeStamp, OTI, WTI, ATI, OLI, OTI_A, OTI_T, VL1-3, IL1-3, VL12, VL23, VL31, INUT, MOG_A
+- DeviceTimeStamp, OTI, WTI, ATI, OLI, OTI_A, OTI_T, VL1, VL2, VL3, IL1, IL2, IL3, VL12, VL23, VL31, INUT, MOG_A
+
+**SQL rules:** Column names with spaces or brackets MUST be double-quoted: "Machine failure", "Air temperature [K]"
 """
+    if dynamic_context:
+        return dynamic_context + "\n" + static
+    return static
 
 
 def clean_sql(sql: str) -> str:
