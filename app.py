@@ -92,7 +92,7 @@ def run_data_query(
     system_prompt = _build_data_prompt(dynamic_schema=dynamic_schema)
     messages = [
         {"role": "system", "content": system_prompt},
-        *[{"role": m["role"], "content": m["content"]} for m in chat_history[-6:]],
+        *[{"role": m.get("role", "user"), "content": m.get("content", "")} for m in chat_history[-6:]],
         {"role": "user", "content": user_message},
     ]
 
@@ -124,7 +124,8 @@ def run_data_query(
     try:
         df = run_sql_query(sql_query)
         st.session_state.last_sql = sql_query
-        st.session_state.query_history = [sql_query] + [q for q in st.session_state.query_history if q != sql_query][:9]
+        prev = st.session_state.get("query_history") or []
+        st.session_state.query_history = [sql_query] + [q for q in prev if q != sql_query][:9]
     except Exception as e:
         logger.exception("SQL execution failed")
         err = str(e)
@@ -170,7 +171,7 @@ def run_chat(user_message: str, chat_history: list, dynamic_schema: str | None =
     system_prompt = _build_chat_prompt(dynamic_schema=dynamic_schema)
     messages = [
         {"role": "system", "content": system_prompt},
-        *[{"role": m["role"], "content": m["content"]} for m in chat_history[-6:]],
+        *[{"role": m.get("role", "user"), "content": m.get("content", "")} for m in chat_history[-6:]],
         {"role": "user", "content": user_message},
     ]
     try:
@@ -186,6 +187,19 @@ def main():
         page_icon="🔧",
         layout="wide",
     )
+
+    # Initialize session state first - ensures all keys exist before any code runs
+    for key, default in [
+        ("messages", []),
+        ("viz_data", None),
+        ("viz_chart_type", "bar"),
+        ("cached_schema", None),
+        ("query_history", []),
+        ("last_sql", None),
+        ("show_correlation", False),
+    ]:
+        if key not in st.session_state:
+            st.session_state[key] = default
 
     st.title("🔧 Predictive Maintenance Chatbot")
     st.markdown("Ask questions about your DataKnobs asset data. I'll run SQL and create visualizations.")
@@ -257,22 +271,6 @@ def main():
             "Add a SQL warehouse resource in app.yaml."
         )
 
-    # Session state
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "viz_data" not in st.session_state:
-        st.session_state.viz_data = None
-    if "viz_chart_type" not in st.session_state:
-        st.session_state.viz_chart_type = "bar"
-    if "cached_schema" not in st.session_state:
-        st.session_state.cached_schema = None
-    if "query_history" not in st.session_state:
-        st.session_state.query_history = []
-    if "last_sql" not in st.session_state:
-        st.session_state.last_sql = None
-    if "show_correlation" not in st.session_state:
-        st.session_state.show_correlation = False
-
     dynamic_schema = st.session_state.get("cached_schema")
 
     # Use suggested prompt from sidebar button or raw SQL from history
@@ -305,7 +303,8 @@ def main():
                         st.session_state.viz_data = df_raw
                         st.session_state.viz_chart_type = "bar"
                         st.session_state.last_sql = sql_to_run
-                        st.session_state.query_history = [sql_to_run] + [q for q in st.session_state.query_history if q != sql_to_run][:9]
+                        prev = st.session_state.get("query_history") or []
+                        st.session_state.query_history = [sql_to_run] + [q for q in prev if q != sql_to_run][:9]
                         st.success(f"Query returned {len(df_raw)} rows")
                         st.rerun()
                     except Exception as e:
@@ -314,7 +313,7 @@ def main():
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
-                if "figure" in msg and msg["figure"] is not None:
+                if msg.get("figure") is not None:
                     st.plotly_chart(msg["figure"], use_container_width=True)
 
         if prompt := prompt_input:
@@ -354,14 +353,14 @@ def main():
         st.subheader("📊 Exploratory Data Analysis")
         st.caption("Visuals update when you ask data questions. Use controls to explore.")
 
-        df = st.session_state.viz_data
+        df = st.session_state.get("viz_data")
         if df is not None and not df.empty:
             cols = list(df.columns)
             numeric = [c for c in cols if pd.api.types.is_numeric_dtype(df[c])]
             categorical = [c for c in cols if c not in numeric]
 
             chart_opts = ["bar", "line", "scatter", "pie", "heatmap", "correlation"]
-            default_idx = chart_opts.index(st.session_state.viz_chart_type) if st.session_state.viz_chart_type in chart_opts else 0
+            default_idx = chart_opts.index(st.session_state.get("viz_chart_type", "bar")) if st.session_state.get("viz_chart_type") in chart_opts else 0
             chart_type = st.selectbox(
                 "Chart type",
                 options=chart_opts,

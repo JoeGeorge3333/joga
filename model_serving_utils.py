@@ -17,6 +17,8 @@ def _get_endpoint_task_type(endpoint_name: str) -> str:
 
 def is_endpoint_supported(endpoint_name: str) -> bool:
     """Check if the endpoint has a supported task type."""
+    if not endpoint_name:
+        return False
     try:
         task_type = _get_endpoint_task_type(endpoint_name)
         supported = ["agent/v1/chat", "agent/v2/chat", "llm/v1/chat"]
@@ -34,6 +36,8 @@ def query_chat_endpoint(
     Query a chat-completions or agent serving endpoint.
     Returns the text content of the assistant's response.
     """
+    if not endpoint_name:
+        raise ValueError("SERVING_ENDPOINT must be set")
     mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "databricks")
     client = get_deploy_client(mlflow_tracking_uri)
 
