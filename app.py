@@ -190,6 +190,8 @@ def main():
     st.title("🔧 Predictive Maintenance Chatbot")
     st.markdown("Ask questions about your DataKnobs asset data. I'll run SQL and create visualizations.")
 
+    warehouse_id = os.getenv("DATABRICKS_WAREHOUSE_ID")
+
     # Sidebar: example prompts + schema refresh
     with st.sidebar:
         st.subheader("📊 DataKnobs datasets")
@@ -249,7 +251,6 @@ def main():
         )
         return
 
-    warehouse_id = os.getenv("DATABRICKS_WAREHOUSE_ID")
     if not warehouse_id:
         st.warning(
             "**DATABRICKS_WAREHOUSE_ID** is not set. Data visualization will not work. "
