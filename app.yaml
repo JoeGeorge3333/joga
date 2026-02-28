@@ -1,0 +1,25 @@
+# Databricks App configuration for Predictive Maintenance Chatbot
+# See: https://docs.databricks.com/en/dev-tools/databricks-apps/configuration
+
+command:
+  - streamlit
+  - run
+  - app.py
+  - --server.port=8001
+  - --server.address=0.0.0.0
+
+env:
+  - name: STREAMLIT_BROWSER_GATHER_USAGE_STATS
+    value: "false"
+  # Model serving endpoint for chatbot (foundation model or agent)
+  - name: SERVING_ENDPOINT
+    valueFrom: serving-endpoint
+  # SQL warehouse for data queries
+  - name: DATABRICKS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  # Optional: Unity Catalog location for predictive maintenance data
+  # Default: dataknobs_predictive_maintenance_and_asset_management.datasets
+  - name: DATA_CATALOG
+    value: "dataknobs_predictive_maintenance_and_asset_management"
+  - name: DATA_SCHEMA
+    value: "datasets"

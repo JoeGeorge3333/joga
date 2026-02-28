@@ -1,0 +1,7 @@
+# Databricks Apps - Predictive Maintenance Chatbot
+streamlit>=1.28.0
+pandas>=2.0.0
+plotly>=5.18.0
+databricks-sql-connector[pyarrow]>=3.0.0
+databricks-sdk>=0.20.0
+mlflow>=2.9.0
