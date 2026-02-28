@@ -19,51 +19,52 @@ logger = logging.getLogger(__name__)
 
 SERVING_ENDPOINT = os.getenv("SERVING_ENDPOINT")
 
-# Example prompts for quick queries (real data available in every Databricks workspace)
+# Example prompts for DataKnobs predictive maintenance data
 EXAMPLE_PROMPTS = [
-    "Show me fare amount vs trip distance for NYC taxi trips",
-    "Plot average fare by passenger count",
-    "What's the distribution of total_amount?",
-    "Revenue by order date from TPC-H",
-    "Top 10 orders by total price",
+    "Show me CNC machine failure rates by type (H, L, M)",
+    "Plot failure type distribution (TWF, HDF, PWF, OSF, RNF)",
+    "Battery capacity degradation over cycles",
+    "Electrical fault counts by phase (A, B, C, Ground)",
+    "Transformer oil temperature vs winding temperature over time",
 ]
 
 
-def _build_data_prompt(dataset_mode: str) -> str:
-    data_context = get_schema_context(dataset_mode)
-    return f"""You are a data assistant. You help users explore and visualize data in Databricks.
+def _build_data_prompt() -> str:
+    data_context = get_schema_context()
+    prefix = os.getenv("DATA_CATALOG", "dataknobs_predictive_maintenance_and_asset_management") + "." + os.getenv("DATA_SCHEMA", "datasets")
+    return f"""You are a data assistant for DataKnobs predictive maintenance data. You help users explore and visualize asset health data.
 
 {data_context}
 
 When the user asks about data, statistics, trends, or visualizations:
-1. Generate valid SQL for the tables above. Use exact table names (e.g. samples.nyctaxi.trips).
+1. Generate valid SQL for the tables above. Use exact table names with the prefix {prefix}.
 2. Return ONLY a JSON object with: sql, chart_type, explanation
 - sql: The SQL query (required, use LIMIT 5000 for large tables)
 - chart_type: bar, line, scatter, pie, or heatmap
 - explanation: Brief description of the chart
 
-Example for "fare vs distance":
+Example for "failure rates by machine type":
 ```json
-{{"sql": "SELECT fare_amount, trip_distance FROM samples.nyctaxi.trips WHERE fare_amount > 0 AND trip_distance > 0 LIMIT 2000", "chart_type": "scatter", "explanation": "Taxi fare vs trip distance"}}
+{{"sql": "SELECT Type, SUM(\\"Machine failure\") as failures, COUNT(*) as total FROM {prefix}.cnc_data_ai_4_i_2020 GROUP BY Type", "chart_type": "bar", "explanation": "Failure counts by CNC machine type (H, L, M)"}}
 ```
 
 If the question is NOT about data, respond in plain text without JSON."""
 
 
-def _build_chat_prompt(dataset_mode: str) -> str:
-    data_context = get_schema_context(dataset_mode)
-    return f"""You are a data assistant for Databricks. Help users explore NYC taxi data, TPC-H benchmark data, and predictive maintenance data.
+def _build_chat_prompt() -> str:
+    data_context = get_schema_context()
+    return f"""You are a data assistant for DataKnobs predictive maintenance data. Help users explore CNC machines, electrical faults, batteries, turbofan engines, and power transformers.
 
 {data_context}
 
 Answer questions, suggest analyses, and help interpret results. Be concise."""
 
 
-def run_data_query(user_message: str, chat_history: list, dataset_mode: str) -> tuple[str, object | None]:
+def run_data_query(user_message: str, chat_history: list) -> tuple[str, object | None]:
     """
     Ask the LLM to generate SQL + chart, execute it, and return response + Plotly figure.
     """
-    system_prompt = _build_data_prompt(dataset_mode)
+    system_prompt = _build_data_prompt()
     messages = [
         {"role": "system", "content": system_prompt},
         *[{"role": m["role"], "content": m["content"]} for m in chat_history[-6:]],
@@ -99,9 +100,9 @@ def run_data_query(user_message: str, chat_history: list, dataset_mode: str) -> 
         return f"Sorry, I couldn't process that: {str(e)}", None
 
 
-def run_chat(user_message: str, chat_history: list, dataset_mode: str) -> str:
+def run_chat(user_message: str, chat_history: list) -> str:
     """General chat without data visualization."""
-    system_prompt = _build_chat_prompt(dataset_mode)
+    system_prompt = _build_chat_prompt()
     messages = [
         {"role": "system", "content": system_prompt},
         *[{"role": m["role"], "content": m["content"]} for m in chat_history[-6:]],
@@ -117,26 +118,16 @@ def main():
         layout="wide",
     )
 
-    st.title("🔧 Data Chatbot")
-    st.markdown("Ask questions about your data. I'll run SQL and create visualizations.")
+    st.title("🔧 Predictive Maintenance Chatbot")
+    st.markdown("Ask questions about your DataKnobs asset data. I'll run SQL and create visualizations.")
 
-    # Sidebar: dataset selector
+    # Sidebar: example prompts
     with st.sidebar:
-        st.subheader("📊 Data source")
-        dataset_mode = st.radio(
-            "Which datasets to query?",
-            options=["samples", "all", "predictive"],
-            format_func=lambda x: {
-                "samples": "NYC Taxi & TPC-H (built-in)",
-                "all": "All datasets",
-                "predictive": "Predictive maintenance only",
-            }[x],
-            index=0,
-            help="NYC Taxi and TPC-H are available in every Databricks workspace.",
-        )
+        st.subheader("📊 DataKnobs datasets")
+        st.caption("CNC, electrical faults, battery, turbofan, transformer")
         st.divider()
         st.caption("Try these prompts:")
-        for ex in EXAMPLE_PROMPTS[:3]:
+        for ex in EXAMPLE_PROMPTS[:5]:
             if st.button(ex, key=ex[:20], use_container_width=True):
                 st.session_state.suggested_prompt = ex
                 st.rerun()
@@ -178,7 +169,7 @@ def main():
         st.session_state.messages = []
 
     # Use suggested prompt from sidebar button
-    prompt_input = st.chat_input("Ask about fare vs distance, revenue trends, or your data...")
+    prompt_input = st.chat_input("Ask about failure rates, asset health, or trends...")
     if "suggested_prompt" in st.session_state:
         prompt_input = st.session_state.pop("suggested_prompt", None)
 
@@ -197,9 +188,9 @@ def main():
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 if warehouse_id:
-                    response_text, fig = run_data_query(prompt, st.session_state.messages, dataset_mode)
+                    response_text, fig = run_data_query(prompt, st.session_state.messages)
                 else:
-                    response_text = run_chat(prompt, st.session_state.messages, dataset_mode)
+                    response_text = run_chat(prompt, st.session_state.messages)
                     fig = None
 
                 st.markdown(response_text)
