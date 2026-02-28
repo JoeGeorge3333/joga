@@ -36,7 +36,7 @@ def run_sql_query(query: str) -> pd.DataFrame:
             return cursor.fetchall_arrow().to_pandas()
 
 
-# Table names for DataKnobs schema
+# Fallback table names if SHOW TABLES fails
 DATAKNOBS_TABLES = [
     "cnc_data_ai_4_i_2020",
     "electrical_fault_train_test_data",
@@ -48,6 +48,21 @@ DATAKNOBS_TABLES = [
     "transformer_train_test_data",
     "transformer_validation_data",
 ]
+
+
+def fetch_table_names() -> list[str]:
+    """Fetch actual table names from the database. Returns empty list on failure."""
+    prefix = _get_table_prefix()
+    try:
+        df = run_sql_query(f"SHOW TABLES IN {prefix}")
+        if df.empty:
+            return []
+        # SHOW TABLES returns database, tableName, isTemporary
+        name_col = "tableName" if "tableName" in df.columns else df.columns[1]
+        return [str(row[name_col]).strip() for _, row in df.iterrows() if row.get(name_col)]
+    except Exception as e:
+        logger.warning("Could not fetch table names: %s", e)
+        return []
 
 
 def fetch_table_schema(table_name: str) -> str | None:
@@ -89,9 +104,11 @@ def get_dynamic_schema_context() -> str | None:
     Returns enriched context string, or None if fetch fails.
     """
     prefix = _get_table_prefix()
+    tables = fetch_table_names() or DATAKNOBS_TABLES[:5]
+    tables = tables[:7]  # Limit to avoid timeout
     parts = [f"## Live schema from database (prefix: {prefix})\n"]
     success = False
-    for table in DATAKNOBS_TABLES[:5]:  # Limit to first 5 tables to avoid timeout
+    for table in tables:
         schema = fetch_table_schema(table)
         if schema:
             success = True
@@ -102,11 +119,18 @@ def get_dynamic_schema_context() -> str | None:
     return "\n".join(parts) if success else None
 
 
+CATALOG_DESCRIPTION = """
+The catalog organizes data related to predictive maintenance and asset management. It includes schemas for equipment performance metrics, maintenance schedules, failure predictions, and asset lifecycle tracking. Use this catalog for analyzing maintenance needs, optimizing asset utilization, and supporting operational efficiency.
+"""
+
+
 def get_schema_context(dynamic_context: str | None = None) -> str:
     """Return schema documentation for the LLM. Pass dynamic_context from fetch when available."""
     prefix = _get_table_prefix()
     static = f"""
 ## DataKnobs Predictive Maintenance Datasets (Unity Catalog)
+
+**Catalog purpose:** {CATALOG_DESCRIPTION.strip()}
 
 Table prefix: {prefix}
 
