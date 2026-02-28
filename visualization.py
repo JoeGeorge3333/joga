@@ -103,6 +103,28 @@ def infer_chart_from_data(df: pd.DataFrame, chart_type: str) -> go.Figure:
     return create_chart(df, chart_type, x=x, y=y, color=color)
 
 
+def create_correlation_heatmap(df: pd.DataFrame, title: str = "Correlation matrix") -> go.Figure:
+    """Create correlation matrix heatmap from numeric columns."""
+    numeric = df.select_dtypes(include=["number"])
+    if numeric.empty or len(numeric.columns) < 2:
+        fig = go.Figure()
+        fig.add_annotation(text="Need at least 2 numeric columns for correlation", showarrow=False)
+        return fig
+    corr = numeric.corr()
+    fig = px.imshow(
+        corr,
+        x=corr.columns,
+        y=corr.columns,
+        color_continuous_scale="RdBu_r",
+        zmin=-1,
+        zmax=1,
+        title=title,
+        aspect="auto",
+    )
+    fig.update_layout(height=500, margin=dict(l=120, r=40, t=50, b=120))
+    return fig
+
+
 def create_chart_with_selection(
     df: pd.DataFrame,
     chart_type: str,

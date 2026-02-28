@@ -19,7 +19,11 @@ from utils import (
     parse_llm_data_response,
     run_sql_query,
 )
-from visualization import create_chart_with_selection, infer_chart_from_data
+from visualization import (
+    create_chart_with_selection,
+    create_correlation_heatmap,
+    infer_chart_from_data,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,6 +37,7 @@ EXAMPLE_PROMPTS = [
     "Battery capacity degradation over cycles",
     "Electrical fault counts by phase (A, B, C, Ground)",
     "Transformer oil temperature vs winding temperature over time",
+    "Correlation matrix for CNC numeric columns",
 ]
 
 
@@ -47,10 +52,10 @@ When the user asks about data, statistics, trends, or visualizations:
 1. Generate valid SQL for the tables above. Use exact table names with the prefix {prefix}.
 2. Return ONLY a JSON object with: sql, chart_type, explanation
 - sql: The SQL query (required, use LIMIT 5000 for large tables)
-- chart_type: bar, line, scatter, pie, or heatmap
+- chart_type: bar, line, scatter, pie, heatmap, or correlation (for correlation matrix)
 - explanation: Brief description of the chart
 
-**SQL rules:** Quote column names with spaces/brackets: "Machine failure", "Air temperature [K]". Use standard SQL. For correlations use CORR(col1, col2). For "what tables" use SHOW TABLES IN {prefix}.
+**SQL rules:** Quote column names with spaces/brackets: "Machine failure", "Air temperature [K]". Use standard SQL. For "what tables" use SHOW TABLES IN {prefix}. For correlation matrix: use chart_type "correlation" and SQL that SELECTs all numeric columns (e.g. SELECT "Air temperature [K]", "Process temperature [K]", "Torque [Nm]" FROM table LIMIT 5000).
 
 Example for "failure rates by machine type":
 ```json
@@ -118,6 +123,8 @@ def run_data_query(
 
     try:
         df = run_sql_query(sql_query)
+        st.session_state.last_sql = sql_query
+        st.session_state.query_history = [sql_query] + [q for q in st.session_state.query_history if q != sql_query][:9]
     except Exception as e:
         logger.exception("SQL execution failed")
         err = str(e)
@@ -131,7 +138,11 @@ def run_data_query(
         return f"**SQL execution failed:** {err}\n\n**Query attempted:**\n```sql\n{sql_query}\n```\n\n{hint}", None, None, "bar"
 
     try:
-        fig = infer_chart_from_data(df, chart_type)
+        if (chart_type or "").lower() == "correlation":
+            from visualization import create_correlation_heatmap
+            fig = create_correlation_heatmap(df, "Correlation matrix")
+        else:
+            fig = infer_chart_from_data(df, chart_type)
     except Exception as e:
         logger.exception("Chart generation failed")
         return f"**Chart failed:** {e}\n\nQuery returned {len(df)} rows. Data preview:\n{table_preview(df)}", None, df, chart_type
@@ -204,6 +215,14 @@ def main():
                 st.session_state.suggested_prompt = ex
                 st.rerun()
 
+        st.divider()
+        st.subheader("📜 Query history")
+        for i, q in enumerate((st.session_state.query_history or [])[:5]):
+            q_short = (q[:60] + "…") if len(q) > 60 else q
+            if st.button(q_short.replace("\n", " "), key=f"qh_{i}", use_container_width=True):
+                st.session_state.raw_sql_to_run = q
+                st.rerun()
+
     if not SERVING_ENDPOINT:
         st.error(
             "**SERVING_ENDPOINT** is not set. Configure a serving endpoint resource in app.yaml "
@@ -237,6 +256,7 @@ def main():
             "Add a SQL warehouse resource in app.yaml."
         )
 
+    # Session state
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "viz_data" not in st.session_state:
@@ -245,19 +265,51 @@ def main():
         st.session_state.viz_chart_type = "bar"
     if "cached_schema" not in st.session_state:
         st.session_state.cached_schema = None
+    if "query_history" not in st.session_state:
+        st.session_state.query_history = []
+    if "last_sql" not in st.session_state:
+        st.session_state.last_sql = None
+    if "show_correlation" not in st.session_state:
+        st.session_state.show_correlation = False
 
     dynamic_schema = st.session_state.get("cached_schema")
 
-    # Use suggested prompt from sidebar button
+    # Use suggested prompt from sidebar button or raw SQL from history
     prompt_input = st.chat_input("Ask about failure rates, asset health, or trends...")
     if "suggested_prompt" in st.session_state:
         prompt_input = st.session_state.pop("suggested_prompt", None)
+
+    # Raw SQL mode - check if we have SQL to run from history or raw editor
+    raw_sql = st.session_state.pop("raw_sql_to_run", None)
 
     # Two-column layout: chat left, interactive viz right
     chat_col, viz_col = st.columns([3, 2], gap="large")
 
     with chat_col:
         st.subheader("💬 Chat")
+
+        # Raw SQL mode
+        with st.expander("🔧 Run raw SQL", expanded=False):
+            sql_editor = st.text_area(
+                "Enter SQL",
+                value=st.session_state.get("last_sql", "SELECT * FROM dataknobs_predictive_maintenance_and_asset_management.datasets.cnc_data_ai_4_i_2020 LIMIT 100"),
+                height=120,
+                key="raw_sql_editor",
+            )
+            if st.button("Run SQL", key="run_raw_sql") or raw_sql:
+                sql_to_run = raw_sql or sql_editor
+                if warehouse_id and sql_to_run.strip():
+                    try:
+                        df_raw = run_sql_query(clean_sql(sql_to_run))
+                        st.session_state.viz_data = df_raw
+                        st.session_state.viz_chart_type = "bar"
+                        st.session_state.last_sql = sql_to_run
+                        st.session_state.query_history = [sql_to_run] + [q for q in st.session_state.query_history if q != sql_to_run][:9]
+                        st.success(f"Query returned {len(df_raw)} rows")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
@@ -307,7 +359,7 @@ def main():
             numeric = [c for c in cols if pd.api.types.is_numeric_dtype(df[c])]
             categorical = [c for c in cols if c not in numeric]
 
-            chart_opts = ["bar", "line", "scatter", "pie", "heatmap"]
+            chart_opts = ["bar", "line", "scatter", "pie", "heatmap", "correlation"]
             default_idx = chart_opts.index(st.session_state.viz_chart_type) if st.session_state.viz_chart_type in chart_opts else 0
             chart_type = st.selectbox(
                 "Chart type",
@@ -329,23 +381,53 @@ def main():
             color_val = None if color_col == "(none)" else color_col
 
             try:
-                viz_fig = create_chart_with_selection(
-                    df, chart_type,
-                    x_col=x_val, y_col=y_val, color_col=color_val,
-                    title=f"Data: {len(df)} rows",
-                )
+                if chart_type == "correlation":
+                    viz_fig = create_correlation_heatmap(df, f"Correlation matrix ({len(df)} rows)")
+                else:
+                    viz_fig = create_chart_with_selection(
+                        df, chart_type,
+                        x_col=x_val, y_col=y_val, color_col=color_val,
+                        title=f"Data: {len(df)} rows",
+                    )
                 st.plotly_chart(viz_fig, use_container_width=True, key="viz_chart")
             except Exception as e:
                 st.error(f"Chart error: {e}")
-                viz_fig = infer_chart_from_data(df, chart_type)
+                viz_fig = infer_chart_from_data(df, "bar" if chart_type == "correlation" else chart_type)
                 st.plotly_chart(viz_fig, use_container_width=True, key="viz_chart_fallback")
 
             with st.expander("📋 Data table", expanded=False):
                 st.dataframe(df.head(100), use_container_width=True, height=300)
 
-            if st.button("Clear visualization", key="viz_clear"):
-                st.session_state.viz_data = None
-                st.rerun()
+            # Action buttons
+            btn_col1, btn_col2, btn_col3, btn_col4, btn_col5 = st.columns(5)
+            with btn_col1:
+                csv = df.to_csv(index=False)
+                st.download_button("📥 Export CSV", csv, file_name="data.csv", mime="text/csv", key="dl_csv")
+            with btn_col2:
+                try:
+                    png_bytes = viz_fig.to_image(format="png")
+                    st.download_button("📥 Download PNG", png_bytes, file_name="chart.png", mime="image/png", key="dl_png")
+                except Exception:
+                    st.caption("PNG (kaleido)")
+            with btn_col3:
+                numeric_count = len([c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])])
+                if numeric_count >= 2 and st.button("📊 Correlation", key="corr_btn"):
+                    st.session_state.show_correlation = True
+                    st.rerun()
+            with btn_col4:
+                if st.session_state.get("last_sql") and st.button("🔄 Refresh", key="refresh_btn", help="Re-run last query"):
+                    st.session_state.raw_sql_to_run = st.session_state.last_sql
+                    st.rerun()
+            with btn_col5:
+                if st.button("Clear", key="viz_clear"):
+                    st.session_state.viz_data = None
+                    st.session_state.show_correlation = False
+                    st.rerun()
+
+            if st.session_state.get("show_correlation"):
+                st.divider()
+                corr_fig = create_correlation_heatmap(df, "Correlation matrix")
+                st.plotly_chart(corr_fig, use_container_width=True, key="corr_chart")
         else:
             st.info("Ask a data question to see visualizations here. Try: *Show me CNC machine failure rates by type*")
             st.markdown("**Example prompts:**")
